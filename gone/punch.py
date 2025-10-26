@@ -1,23 +1,25 @@
 class Punch:
-    def __init__(self,mp_drawing,np,cv2,deque) -> None:
+    def __init__(self, mp_drawing, np, cv2, deque, udp_client) -> None:
         self.np = np
         self.cv2 = cv2
         self.prev_pose_landmarks = None
         self.punch_history = deque(maxlen=10)
         self.drawing = mp_drawing  # Store last 10 frames for smoothing
-        self.punch_threshold = 0.03 # Distance threshold for punch detection
-        self.min_punch_velocity = 0.15
+        self.punch_threshold = 0.25  # Distance threshold for punch detection
+        self.min_punch_velocity = 0.08  # Reduced for better detection
+        self.udp_client = udp_client
 
-    def calculate_distance(self,point1, point2):
+    def calculate_distance(self, point1, point2):
         """Calculate Euclidean distance between two points"""
         distance = self.np.sqrt((point1.x - point2.x)**2 + (point1.y - point2.y)**2 + (point1.z - point2.z)**2)
-    
         return distance
 
-    def calculate_velocity(self,prev_pos, curr_pos):
+    def calculate_velocity(self, prev_pos, curr_pos):
         """Calculate velocity of hand movement"""
         if prev_pos is None:
             return 0
+        return self.calculate_distance(prev_pos, curr_pos)
+    
     def calculate_angle(self, point1, point2, point3):
         """
         Calculate angle between three points (in 3D space)
@@ -29,25 +31,30 @@ class Punch:
         # Create vectors
         v1 = self.np.array([point1.x - point2.x, point1.y - point2.y, point1.z - point2.z])
         v2 = self.np.array([point3.x - point2.x, point3.y - point2.y, point3.z - point2.z])
-  
-        
 
-         # Calculate magnitudes
+        # Calculate magnitudes
         mag1 = self.np.linalg.norm(v1)
         mag2 = self.np.linalg.norm(v2)
 
         if mag1 == 0 or mag2 == 0:
-             return 0
+            return 0
 
-         # Calculate cosine of angle
+        # Calculate cosine of angle
         cos_angle = self.np.dot(v1, v2) / (mag1 * mag2)
         cos_angle = self.np.clip(cos_angle, -1.0, 1.0)  # Clamp to [-1, 1]
 
-         # Calculate angle in degrees
+        # Calculate angle in degrees
         angle = self.np.arccos(cos_angle) * 180 / self.np.pi
         return angle
+    
+    def is_forward_motion(self, wrist, elbow, shoulder):
+        """Check if punch is moving forward (toward camera) using z-coordinate"""
+        # Wrist should be in front of (lower z than) elbow and shoulder
+        forward_from_elbow = elbow.z - wrist.z > 0.01
+        forward_from_shoulder = shoulder.z - wrist.z > 0.01
+        return forward_from_elbow or forward_from_shoulder
              
-    def draw_punch_indicator(self,frame, punch_detected,confidence,arm_angle, punch_type,distance):
+    def draw_punch_indicator(self, frame, punch_detected, confidence, arm_angle, punch_type, distance):
         """Draw punch detection indicator on frame"""
         if frame is None:
             return frame
@@ -63,16 +70,16 @@ class Punch:
 
             # Draw punch text
             text = f"PUNCH DETECTED! {punch_type} - Confidence: {confidence:.2f}"
-            self.cv2.putText(frame, text, (60,60), self.cv2.FONT_HERSHEY_SIMPLEX, 
+            self.cv2.putText(frame, text, (60, 60), self.cv2.FONT_HERSHEY_SIMPLEX, 
                         1.5, (0, 0, 255), 3)
 
             # Draw angle and distance info
             angle_text = f"Arm Angle: {arm_angle:.1f}°"
-            self.cv2.putText(frame, angle_text, (350,350), self.cv2.FONT_HERSHEY_SIMPLEX, 
+            self.cv2.putText(frame, angle_text, (100, 100), self.cv2.FONT_HERSHEY_SIMPLEX, 
                         1, (0, 0, 255), 2)
 
             dist_text = f"Distance: {distance:.2f}"
-            self.cv2.putText(frame, dist_text, (300, 300), self.cv2.FONT_HERSHEY_SIMPLEX, 
+            self.cv2.putText(frame, dist_text, (200, 200), self.cv2.FONT_HERSHEY_SIMPLEX, 
                         1, (0, 0, 255), 2)
 
             # Draw filled circle indicator
@@ -84,12 +91,13 @@ class Punch:
 
         return frame
 
-    def detect_punch(self,landmarks, prev_landmarks):
+    def detect_punch(self, landmarks, prev_landmarks):
         """
         Detect punch based on:
-        1. Arm angle close to 180 degrees (fully extended)
-        2. Maximum distance between wrist and shoulder
-        3. Rapid hand movement
+        1. Rapid hand movement (velocity)
+        2. Forward motion (z-coordinate)
+        3. Arm extension (distance from shoulder)
+        4. Works with both straight and bent arms
         """
         if landmarks is None or prev_landmarks is None:
             return False, 0, "", 0, 0
@@ -102,7 +110,6 @@ class Punch:
             RIGHT_SHOULDER = 12
             LEFT_ELBOW = 13
             RIGHT_ELBOW = 14
-            NOSE = 0
 
             # Get current positions
             left_wrist = landmarks.landmark[LEFT_WRIST]
@@ -111,7 +118,6 @@ class Punch:
             right_shoulder = landmarks.landmark[RIGHT_SHOULDER]
             left_elbow = landmarks.landmark[LEFT_ELBOW]
             right_elbow = landmarks.landmark[RIGHT_ELBOW]
-            nose = landmarks.landmark[NOSE]
 
             # Get previous positions
             prev_left_wrist = prev_landmarks.landmark[LEFT_WRIST]
@@ -134,17 +140,22 @@ class Punch:
 
                 # Calculate distance between wrist and shoulder
                 distance = self.calculate_distance(right_wrist, right_shoulder)
+                
+                # Check forward motion
+                is_forward = self.is_forward_motion(right_wrist, right_elbow, right_shoulder)
 
-                # Check if arm is nearly straight (180 degrees ± 20 degrees tolerance)
-                if arm_angle>=90:
-                    # Check if distance is maximum (arm fully extended)
-                    if distance > self.punch_threshold:
-                        print("right punch ",right_velocity)
-                        punch_detected = True
-                        punch_type = "RIGHT"
-                        # Confidence based on how close to 180 degrees
-                        confidence = ((arm_angle-90)/90)
-                        confidence = max(0, min(confidence, 1.0))
+                # Accept angles from 90° to 180° (bent to straight arm)
+                # and check if arm is extended forward
+                if arm_angle >= 90 and distance > self.punch_threshold and is_forward:
+                    print(f"Right punch - Velocity: {right_velocity:.3f}, Angle: {arm_angle:.1f}°, Distance: {distance:.3f}")
+                    punch_detected = True
+                    punch_type = "RIGHT"
+                    
+                    # Confidence based on velocity and extension
+                    velocity_conf = min(right_velocity / 0.3, 1.0)
+                    angle_conf = min((arm_angle - 90) / 90, 1.0)
+                    confidence = (velocity_conf + angle_conf) / 2
+                    confidence = max(0, min(confidence, 1.0))
 
             # Left punch detection
             if left_velocity > self.min_punch_velocity:
@@ -153,33 +164,50 @@ class Punch:
 
                 # Calculate distance between wrist and shoulder
                 distance = self.calculate_distance(left_wrist, left_shoulder)
+                
+                # Check forward motion
+                is_forward = self.is_forward_motion(left_wrist, left_elbow, left_shoulder)
 
-                # Check if arm is nearly straight (180 degrees ± 20 degrees tolerance)
-                if arm_angle>90:
-                    # Check if distance is maximum (arm fully extended)
-                    if distance > self.punch_threshold:
-                        print("left_punch",left_velocity)
-                        punch_detected = True
-                        punch_type = "LEFT"
-                        # Confidence based on how close to 180 degrees
-                        confidence = ((arm_angle-90)/90)
-                        confidence = max(0, min(confidence, 1.0))
+                # Accept angles from 90° to 180° (bent to straight arm)
+                # and check if arm is extended forward
+                if arm_angle >= 90 and distance > self.punch_threshold and is_forward:
+                    print(f"Left punch - Velocity: {left_velocity:.3f}, Angle: {arm_angle:.1f}°, Distance: {distance:.3f}")
+                    punch_detected = True
+                    punch_type = "LEFT"
+                    
+                    # Confidence based on velocity and extension
+                    velocity_conf = min(left_velocity / 0.3, 1.0)
+                    angle_conf = min((arm_angle - 90) / 90, 1.0)
+                    confidence = (velocity_conf + angle_conf) / 2
+                    confidence = max(0, min(confidence, 1.0))
 
             return punch_detected, confidence, punch_type, arm_angle, distance
 
-        except:
+        except Exception as e:
+            print(f"Error in punch detection: {e}")
             return False, 0, "", 0, 0
-    def punch_execute(self,frame,result):
-         # Detect punch
+    
+    def punch_execute(self, frame, result):
+        # Detect punch
         punch_detected, confidence, punch_type, arm_angle, distance = self.detect_punch(
             result.pose_landmarks,
             self.prev_pose_landmarks)
-         # Store in history for smoothing
+        
+        # Store in history for smoothing
         self.punch_history.append(punch_detected)
        
-        # if 6+ frames in last 10 show punch)
+        # if 6+ frames in last 10 show punch
         smoothed_punch = sum(self.punch_history) >= 6
  
-        draw_frame = self.draw_punch_indicator(frame, smoothed_punch, confidence, arm_angle,punch_type,distance)
+        draw_frame = self.draw_punch_indicator(frame, smoothed_punch, confidence, arm_angle, punch_type, distance)
         self.prev_pose_landmarks = result.pose_landmarks
+        
+        if self.udp_client:
+            self.udp_client.send_punch_data(
+                smoothed_punch, 
+                confidence, 
+                punch_type, 
+                arm_angle, 
+                distance)
+        
         return draw_frame

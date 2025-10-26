@@ -1,6 +1,6 @@
-
+from RotationUDP import RotationUDPClient
 class Rotation:
-    def  __init__(self,mp_pose,mp_drawing,cv2,math) -> None:
+    def  __init__(self,mp_pose,mp_drawing,cv2,math,udp_host,udp_port) -> None:
         self.mp_pose = mp_pose
         self.mp_drawing = mp_drawing
         self.cv2  = cv2
@@ -8,6 +8,8 @@ class Rotation:
         self.reference_angle = None
         self.calibration_frames = 30
         self.frame_count = 0
+        self.udp_client = RotationUDPClient(host=udp_host, port=udp_port)
+        
 # Initialize MediaPipe Pose
 
 
@@ -75,7 +77,8 @@ class Rotation:
                     self.cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
     def execute(self,frame,results):
-    
+        direction = None
+        rotation_angle = None
         h,w, _ = frame.shape
 
         # Open webcam
@@ -118,11 +121,12 @@ class Rotation:
 
                 self.cv2.putText(frame, f"Calibrating... {self.frame_count}/{self.calibration_frames}", 
                             (10, h - 20), self.cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                self.udp_client.send_rotation_data("Calibrating", 0.0, is_calibrated=False)
             else:
                 # Detection phase
                 direction, rotation_angle = self.get_rotation_direction_and_angle(current_angle, self.reference_angle)
                 self.draw_info(frame, direction, rotation_angle, left_shoulder_coords, right_shoulder_coords)
-
+                self.udp_client.send_rotation_data(direction, rotation_angle, is_calibrated=True)
             # Draw pose landmarks
             self.mp_drawing.draw_landmarks(
                 frame, 
@@ -131,12 +135,12 @@ class Rotation:
                 self.mp_drawing.DrawingSpec(color=(245, 117, 66), thickness=2, circle_radius=2),
                 self.mp_drawing.DrawingSpec(color=(245, 66, 230), thickness=2, circle_radius=2)
             )
-            
+                
         else:
             self.cv2.putText(frame, "No person detected", (10, 30), 
                         self.cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-
+            self.udp_client.send_rotation_data("No Detection", 0.0, is_calibrated=False)
             # Display frame
 
-        return frame 
+        return frame , direction , rotation_angle
             # Keyboard contro

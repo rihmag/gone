@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import mediapipe as mp
+from PunchUDP import PunchUDPClient
 from fire import Fire
 from punch import Punch
 from collections import deque as dq
@@ -38,10 +39,11 @@ with holistic.Holistic(min_tracking_confidence=0.5, min_detection_confidence=0.5
         min_detection_confidence=0.5,
         min_tracking_confidence=0.5
     )
-    
+    udp_client = PunchUDPClient()
     fire_object = Fire(mp_hands, mp_pose, mp_drawing, np, cv2)
-    punch_object = Punch(mp_drawing,np,cv2,dq)
-    rotation_object  = Rotation(pose ,mp_drawing,cv2,math)
+    punch_object = Punch(mp_drawing,np,cv2,dq,udp_client)
+    rotation_object  = Rotation(mp_pose ,mp_drawing,cv2,math, udp_host='127.0.0.1', udp_port=5066)
+    
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -67,10 +69,11 @@ with holistic.Holistic(min_tracking_confidence=0.5, min_detection_confidence=0.5
         # Detect fire pose
         status_text, fire_detected = fire_object.Detect_Fire(frame, pose_result, hand_result)
         draw_frame = punch_object.punch_execute(frame,pose_result)
-        rotate_frame  = rotation_object.execute(frame,pose_result)
-        
+        rotate_frame , direction , angle   = rotation_object.execute(frame,pose_result)
+        res = cv2.resize(frame, dsize=(1600,1000), interpolation=cv2.INTER_CUBIC)
         # Display frame
-        cv2.imshow('Fire Pose Detector', rotate_frame)
+        cv2.imshow('Fire Pose Detector', res)
+        
         
         # Break loop on 'q' press
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -79,6 +82,7 @@ with holistic.Holistic(min_tracking_confidence=0.5, min_detection_confidence=0.5
     # Cleanup
     hands.close()
     pose.close()
-
+    udp_client.close()
+    
 cap.release()
 cv2.destroyAllWindows()
