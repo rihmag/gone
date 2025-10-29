@@ -42,9 +42,9 @@ class Rotation:
         elif rotation < -90:
             rotation = rotation + 180
 
-        if abs(rotation) < 7:  # Small dead zone for noise only
+        if abs(rotation) < 1.5:  # Small dead zone for noise only
             direction = "Center"
-        elif rotation > 0:
+        elif rotation > 1:
             direction = "Rotated Right"
         else:
             direction = "Rotated Left"

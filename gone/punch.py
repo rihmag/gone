@@ -1,13 +1,15 @@
 class Punch:
     def __init__(self, mp_drawing, np, cv2, deque, udp_client) -> None:
         self.np = np
+      
         self.cv2 = cv2
         self.prev_pose_landmarks = None
         self.punch_history = deque(maxlen=10)
         self.drawing = mp_drawing  # Store last 10 frames for smoothing
         self.punch_threshold = 0.25  # Distance threshold for punch detection
-        self.min_punch_velocity = 0.08  # Reduced for better detection
+        self.min_punch_velocity = 0.1# Reduced for better detection
         self.udp_client = udp_client
+        self.fist_threshold = 0.15
 
     def calculate_distance(self, point1, point2):
         """Calculate Euclidean distance between two points"""
@@ -46,13 +48,55 @@ class Punch:
         # Calculate angle in degrees
         angle = self.np.arccos(cos_angle) * 180 / self.np.pi
         return angle
-    
-    def is_forward_motion(self, wrist, elbow, shoulder):
-        """Check if punch is moving forward (toward camera) using z-coordinate"""
-        # Wrist should be in front of (lower z than) elbow and shoulder
-        forward_from_elbow = elbow.z - wrist.z > 0.01
-        forward_from_shoulder = shoulder.z - wrist.z > 0.01
-        return forward_from_elbow or forward_from_shoulder
+  
+ 
+    def is_fist_closed(self, hand_landmarks):
+        """
+        Check if hand is closed (fist) by measuring distances between fingertips and palm
+        Returns True if fist is closed
+        """
+        if hand_landmarks is None:
+            return False
+        
+        try:
+            # MediaPipe hand landmark indices
+            WRIST = 0
+            THUMB_TIP = 4
+            INDEX_TIP = 8
+            MIDDLE_TIP = 12
+            RING_TIP = 16
+            PINKY_TIP = 20
+            
+            wrist = hand_landmarks.landmark[WRIST]
+            thumb_tip = hand_landmarks.landmark[THUMB_TIP]
+            index_tip = hand_landmarks.landmark[INDEX_TIP]
+            middle_tip = hand_landmarks.landmark[MIDDLE_TIP]
+            ring_tip = hand_landmarks.landmark[RING_TIP]
+            pinky_tip = hand_landmarks.landmark[PINKY_TIP]
+            
+            # Calculate average distance of fingertips to wrist
+            distances = [
+                self.calculate_distance(index_tip, wrist),
+                self.calculate_distance(middle_tip, wrist),
+                self.calculate_distance(ring_tip, wrist),
+                self.calculate_distance(pinky_tip, wrist)
+            ]
+            
+            avg_distance = sum(distances) / len(distances)
+            
+            # If fingertips are close to wrist, hand is closed (fist)
+            is_closed = avg_distance < self.fist_threshold
+            
+            return is_closed
+            
+        except Exception as e:
+            print(f"Error checking fist: {e}")
+            return False
+  
+  
+  
+  
+  
              
     def draw_punch_indicator(self, frame, punch_detected, confidence, arm_angle, punch_type, distance):
         """Draw punch detection indicator on frame"""
@@ -91,7 +135,7 @@ class Punch:
 
         return frame
 
-    def detect_punch(self, landmarks, prev_landmarks):
+    def detect_punch(self, landmarks, prev_landmarks,left_hand,right_hand):
         """
         Detect punch based on:
         1. Rapid hand movement (velocity)
@@ -133,8 +177,10 @@ class Punch:
             arm_angle = 0
             distance = 0
 
+            right_fist_closed = self.is_fist_closed(right_hand)
+            left_fist_closed = self.is_fist_closed(left_hand)
             # Right punch detection
-            if right_velocity > self.min_punch_velocity:
+            if right_velocity > self.min_punch_velocity and right_fist_closed:
                 # Calculate arm angle (shoulder -> elbow -> wrist)
                 arm_angle = self.calculate_angle(right_shoulder, right_elbow, right_wrist)
 
@@ -142,11 +188,11 @@ class Punch:
                 distance = self.calculate_distance(right_wrist, right_shoulder)
                 
                 # Check forward motion
-                is_forward = self.is_forward_motion(right_wrist, right_elbow, right_shoulder)
+
 
                 # Accept angles from 90° to 180° (bent to straight arm)
                 # and check if arm is extended forward
-                if arm_angle >= 90 and distance > self.punch_threshold and is_forward:
+                if arm_angle >= 90 and distance > self.punch_threshold  :
                     print(f"Right punch - Velocity: {right_velocity:.3f}, Angle: {arm_angle:.1f}°, Distance: {distance:.3f}")
                     punch_detected = True
                     punch_type = "RIGHT"
@@ -158,7 +204,7 @@ class Punch:
                     confidence = max(0, min(confidence, 1.0))
 
             # Left punch detection
-            if left_velocity > self.min_punch_velocity:
+            if left_velocity > self.min_punch_velocity and left_fist_closed:
                 # Calculate arm angle (shoulder -> elbow -> wrist)
                 arm_angle = self.calculate_angle(left_shoulder, left_elbow, left_wrist)
 
@@ -166,11 +212,11 @@ class Punch:
                 distance = self.calculate_distance(left_wrist, left_shoulder)
                 
                 # Check forward motion
-                is_forward = self.is_forward_motion(left_wrist, left_elbow, left_shoulder)
+
 
                 # Accept angles from 90° to 180° (bent to straight arm)
                 # and check if arm is extended forward
-                if arm_angle >= 90 and distance > self.punch_threshold and is_forward:
+                if arm_angle >= 90 and distance > self.punch_threshold :
                     print(f"Left punch - Velocity: {left_velocity:.3f}, Angle: {arm_angle:.1f}°, Distance: {distance:.3f}")
                     punch_detected = True
                     punch_type = "LEFT"
@@ -187,11 +233,25 @@ class Punch:
             print(f"Error in punch detection: {e}")
             return False, 0, "", 0, 0
     
-    def punch_execute(self, frame, result):
+    def punch_execute(self, frame, result,hand_results):
         # Detect punch
+        left_hand_landmarks = None
+        right_hand_landmarks = None
+        
+        if hand_results and hand_results.multi_hand_landmarks and hand_results.multi_handedness:
+            for hand_landmarks, handedness in zip(hand_results.multi_hand_landmarks, hand_results.multi_handedness):
+                # Get hand label (Left or Right)
+                hand_label = handedness.classification[0].label
+                
+                if hand_label == "Left":
+                    left_hand_landmarks = hand_landmarks
+                elif hand_label == "Right":
+                    right_hand_landmarks = hand_landmarks
+        
+
         punch_detected, confidence, punch_type, arm_angle, distance = self.detect_punch(
             result.pose_landmarks,
-            self.prev_pose_landmarks)
+            self.prev_pose_landmarks,left_hand_landmarks,right_hand_landmarks)
         
         # Store in history for smoothing
         self.punch_history.append(punch_detected)

@@ -68,7 +68,7 @@ with holistic.Holistic(min_tracking_confidence=0.5, min_detection_confidence=0.5
         
         # Detect fire pose
         status_text, fire_detected = fire_object.Detect_Fire(frame, pose_result, hand_result)
-        draw_frame = punch_object.punch_execute(frame,pose_result)
+        draw_frame = punch_object.punch_execute(frame,pose_result,hand_result)
         rotate_frame , direction , angle   = rotation_object.execute(frame,pose_result)
         res = cv2.resize(frame, dsize=(1600,1000), interpolation=cv2.INTER_CUBIC)
         # Display frame
