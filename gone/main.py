@@ -7,13 +7,15 @@ from punch import Punch
 from collections import deque as dq
 import math as math 
 from rotation import Rotation
+from walk import Walk
+from WalkUDP import WalkUDPClient
 mp_hands = mp.solutions.hands
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 holistic = mp.solutions.holistic
 
 # Open webcam
-cap = cv2.VideoCapture(1)
+cap = cv2.VideoCapture(0)
 
 if not cap.isOpened():
     print("Error: Could not open video file punching_video.mp4")
@@ -40,9 +42,12 @@ with holistic.Holistic(min_tracking_confidence=0.5, min_detection_confidence=0.5
         min_tracking_confidence=0.5
     )
     udp_client = PunchUDPClient()
+    walk_udp_client = WalkUDPClient()
+    
     fire_object = Fire(mp_hands, mp_pose, mp_drawing, np, cv2)
     punch_object = Punch(mp_drawing,np,cv2,dq,udp_client)
     rotation_object  = Rotation(mp_pose ,mp_drawing,cv2,math, udp_host='127.0.0.1', udp_port=5066)
+    walk_object = Walk(walk_udp_client,mp_drawing,mp_pose,pose,np,cv2)
     
     while True:
         ret, frame = cap.read()
@@ -52,7 +57,7 @@ with holistic.Holistic(min_tracking_confidence=0.5, min_detection_confidence=0.5
         
         # Flip frame horizontally for mirror effect
         frame = cv2.flip(frame, 1)
-        frame = cv2.rotate(frame,cv2.ROTATE_90_COUNTERCLOCKWISE)
+        
         
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pose_result = pose.process(rgb)
@@ -70,6 +75,7 @@ with holistic.Holistic(min_tracking_confidence=0.5, min_detection_confidence=0.5
         status_text, fire_detected = fire_object.Detect_Fire(frame, pose_result, hand_result)
         draw_frame = punch_object.punch_execute(frame,pose_result,hand_result)
         rotate_frame , direction , angle   = rotation_object.execute(frame,pose_result)
+        walk_frame = walk_object.process_frame(frame)
         res = cv2.resize(frame, dsize=(1600,1000), interpolation=cv2.INTER_CUBIC)
         # Display frame
         cv2.imshow('Fire Pose Detector', res)
@@ -80,7 +86,7 @@ with holistic.Holistic(min_tracking_confidence=0.5, min_detection_confidence=0.5
             break
     
     # Cleanup
-    hands.close()
+    hands.close()   
     pose.close()
     udp_client.close()
     
